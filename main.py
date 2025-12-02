@@ -24,21 +24,18 @@ load_dotenv()  # this reads .env and puts values into environment
 # ========== CONFIG ==========
 
 # Gmail SMTP config (use app password, not your real Gmail password)
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "yourgmail@gmail.com")
-SMTP_PASS = os.getenv("SMTP_PASS", "your_app_password")
-SENDER_EMAIL = os.getenv("SENDER_EMAIL", SMTP_USER)
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = os.getenv("SMTP_PORT")
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASS = os.getenv("SMTP_PASS")
+SENDER_EMAIL = os.getenv("SENDER_EMAIL")
+BANNER_IMAGE_URL = os.getenv("PARTY_BANNER_URL")
 
-PARTY_NAME = "New Year Bash 2026"
-PARTY_VENUE = "INS KURSURA SUBMARINE LAWN"
-PARTY_DATE = "31 Dec 2025, 7:30 PM - 12:30 AM"
+# Validate required SMTP config
+if not all([SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SENDER_EMAIL]):
+    raise RuntimeError("Missing required SMTP environment variables.")
 
-# Optional banner image for email
-BANNER_IMAGE_URL = os.getenv(
-    "PARTY_BANNER_URL",
-    "https://example.com/your-party-banner.jpg"  # replace with real URL
-)
+SMTP_PORT = int(SMTP_PORT)  # convert after validation
 
 # Neon / Postgres connection string from env
 # Example .env:

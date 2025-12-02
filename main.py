@@ -40,27 +40,33 @@ BANNER_IMAGE_URL = os.getenv(
     "https://example.com/your-party-banner.jpg"  # replace with real URL
 )
 
-# Postgres config – adjust for your setup
-PG_HOST = os.getenv("PG_HOST", "localhost")
-PG_PORT = int(os.getenv("PG_PORT", "5432"))
-PG_DB = os.getenv("PG_DB", "new_year")
-PG_USER = os.getenv("PG_USER", "postgres")
-PG_PASSWORD = os.getenv("PG_PASSWORD", "2014230")  # or from .env
+# Neon / Postgres connection string from env
+# Example .env:
+# DATABASE_URL=postgresql://neondb_owner:PASS@ep-...neon.tech/neondb?sslmode=require&target_session_attrs=read-write
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set in environment variables.")
 
-# DSN for psycopg2
-PG_DSN = (
-    f"host={PG_HOST} port={PG_PORT} "
-    f"dbname={PG_DB} user={PG_USER} password={PG_PASSWORD}"
-)
-
-# ========== Postgres Connection Pool ==========
+# ========== Postgres Connection Pool (Neon) ==========
 
 try:
+    # psycopg2 can take a full DSN URL directly
     pool = SimpleConnectionPool(
         minconn=1,
         maxconn=10,
-        dsn=PG_DSN,
+        dsn=DATABASE_URL,
     )
+
+    # Optional sanity check at startup
+    conn = pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT now();")
+            ts = cur.fetchone()
+            print(f"Connected to Postgres. Server time: {ts[0]}")
+    finally:
+        pool.putconn(conn)
+
 except Exception as e:
     # Fail fast if DB is unreachable on startup
     raise RuntimeError(f"Could not connect to Postgres: {e}")
@@ -204,10 +210,12 @@ def send_ticket_email(
 
 app = FastAPI(title="New Year Party Ticketing API (pg + gmail + qr)")
 
-# CORS so Vite frontend can call this API
+# CORS so frontend can call this API
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    # add your deployed frontend origin here when you host it
+    # "https://your-frontend-domain.com",
 ]
 
 app.add_middleware(

@@ -9,6 +9,7 @@ from email.mime.text import MIMEText
 from email import encoders
 import os
 from dotenv import load_dotenv
+import logging
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +17,10 @@ from pydantic import BaseModel, EmailStr, constr
 
 import qrcode
 import psycopg2
+
+# ---------- Logging ----------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("ticketing")
 
 # Load .env
 load_dotenv()  # this reads .env and puts values into environment
@@ -36,17 +41,22 @@ if not all([SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SENDER_EMAIL]):
 
 SMTP_PORT = int(SMTP_PORT)  # convert after validation
 
+logger.info(
+    f"SMTP config loaded: host={SMTP_HOST}, port={SMTP_PORT}, "
+    f"user={SMTP_USER}, sender={SENDER_EMAIL}"
+)
+
 # Party details
 PARTY_NAME = "New Year Bash 2026"
 PARTY_VENUE = "INS KURSURA SUBMARINE LAWN"
 PARTY_DATE = "31 Dec 2025, 7:30 PM - 12:30 AM"
 
 # Neon / Postgres connection string from env
-# Example .env:
-# DATABASE_URL=postgresql://neondb_owner:PASS@ep-...neon.tech/neondb?sslmode=require&target_session_attrs=read-write
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set in environment variables.")
+
+logger.info("DATABASE_URL found, will connect per request.")
 
 # ========== Postgres Connection (Neon) ==========
 
@@ -58,10 +68,15 @@ def get_db_conn():
     """
     conn = None
     try:
+        logger.info("Opening new DB connection...")
         conn = psycopg2.connect(DATABASE_URL)
         yield conn
+    except Exception as e:
+        logger.exception(f"DB connection error: {e}")
+        raise
     finally:
         if conn is not None:
+            logger.info("Closing DB connection.")
             conn.close()
 
 
@@ -130,7 +145,7 @@ def send_ticket_email(
       <div style="padding: 25px;">
 
         <h2 style="color: #333; text-align:center;">Your Ticket is Confirmed 🎉</h2>
-        <p style="font-size: 16px; color: #555%;">
+        <p style="font-size: 16px; color: #555;">
           Hi <strong>{ticket.name}</strong>,<br><br>
           Your ticket has been successfully booked for 
           <strong>{PARTY_NAME}</strong>!
@@ -181,13 +196,30 @@ def send_ticket_email(
     )
     msg.attach(part)
 
+    logger.info(
+        f"Preparing to send email: to={recipient_email}, "
+        f"via {SMTP_HOST}:{SMTP_PORT}, sender={SENDER_EMAIL}"
+    )
+
     try:
-        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
+        logger.info("Connecting to SMTP server...")
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20)
+
+        logger.info("Starting TLS...")
         server.starttls()
+
+        logger.info("Logging in to SMTP server...")
         server.login(SMTP_USER, SMTP_PASS)
+
+        logger.info("Sending email...")
         server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
+
+        logger.info("Closing SMTP connection.")
         server.quit()
+
+        logger.info("Email sent successfully.")
     except Exception as e:
+        logger.exception(f"SMTP error while sending to {recipient_email}: {e}")
         raise RuntimeError(f"Failed to send email: {e}")
 
 
@@ -212,6 +244,7 @@ def create_ticket(ticket: TicketCreate, conn=Depends(get_db_conn)):
     Block duplicate UPI IDs: if upi_id already exists, reject the request.
     """
     ticket_uid = str(uuid.uuid4())
+    logger.info(f"Creating ticket for {ticket.email} with UPI {ticket.upi_id}")
 
     # 0) Check if UPI already exists
     try:
@@ -222,6 +255,7 @@ def create_ticket(ticket: TicketCreate, conn=Depends(get_db_conn)):
             )
             existing = cur.fetchone()
         if existing:
+            logger.info(f"UPI {ticket.upi_id} already registered.")
             raise HTTPException(
                 status_code=400,
                 detail="This UPI ID is already registered for a ticket.",
@@ -229,6 +263,7 @@ def create_ticket(ticket: TicketCreate, conn=Depends(get_db_conn)):
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"DB lookup failed: {e}")
         raise HTTPException(status_code=500, detail=f"DB lookup failed: {e}")
 
     # 1) Insert into DB
@@ -251,11 +286,14 @@ def create_ticket(ticket: TicketCreate, conn=Depends(get_db_conn)):
             )
             row = cur.fetchone()
         conn.commit()
+        logger.info(f"Ticket inserted for {ticket.email} with ticket_uid={ticket_uid}")
     except Exception as e:
         conn.rollback()
+        logger.exception(f"DB insert failed: {e}")
         raise HTTPException(status_code=500, detail=f"DB insert failed: {e}")
 
     # 2) Generate QR
+    logger.info(f"Generating QR for ticket_uid={ticket_uid}")
     qr_bytes = generate_qr_png_bytes(ticket_uid)
 
     # 3) Send email
@@ -267,6 +305,7 @@ def create_ticket(ticket: TicketCreate, conn=Depends(get_db_conn)):
             qr_png_bytes=qr_bytes,
         )
     except RuntimeError as e:
+        logger.error(f"Email send failed for {ticket.email}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
     return TicketResponse(
@@ -278,6 +317,7 @@ def create_ticket(ticket: TicketCreate, conn=Depends(get_db_conn)):
         ticket_type=TicketType(row[5]),
     )
 
+
 @app.get("/")
 def health():
     return {"status": "ok"}
@@ -288,6 +328,7 @@ def get_ticket(ticket_uid: str, conn=Depends(get_db_conn)):
     """
     Fetch ticket by ticket_uid for verification at entry.
     """
+    logger.info(f"Fetching ticket {ticket_uid}")
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -300,9 +341,11 @@ def get_ticket(ticket_uid: str, conn=Depends(get_db_conn)):
             )
             row = cur.fetchone()
     except Exception as e:
+        logger.exception(f"DB query failed: {e}")
         raise HTTPException(status_code=500, detail=f"DB query failed: {e}")
 
     if not row:
+        logger.info(f"Ticket {ticket_uid} not found.")
         raise HTTPException(status_code=404, detail="Ticket not found")
 
     return TicketResponse(

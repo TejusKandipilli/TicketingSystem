@@ -35,7 +35,7 @@ if not all([SENDGRID_API_KEY, SENDER_EMAIL]):
 logger.info(f"SendGrid config loaded: sender={SENDER_EMAIL}")
 
 # Banner file path (local file, e.g. in same folder as main.py)
-# Put banner.png in the same directory as this file.
+# Put public/banner.png in the backend repo so this path is valid.
 BANNER_FILE_PATH = os.getenv("PARTY_BANNER_FILE", "public/banner.png")
 
 # Party details
@@ -86,6 +86,7 @@ class TicketCreate(BaseModel):
     email: EmailStr
     upi_id: constr(strip_whitespace=True, min_length=5)
     ticket_type: TicketType
+    ticket_count: int = 1  # new field with default 1
 
 
 class TicketResponse(BaseModel):
@@ -95,6 +96,7 @@ class TicketResponse(BaseModel):
     email: EmailStr
     upi_id: str
     ticket_type: TicketType
+    ticket_count: int      # new field in response
 
 
 # ========== QR Code Generation ==========
@@ -146,6 +148,7 @@ def send_ticket_email(
         <table style="width:100%; border-collapse: collapse;">
           <tr><td style="padding: 8px; font-weight:bold;">Ticket ID:</td><td>{ticket_uid}</td></tr>
           <tr><td style="padding: 8px; font-weight:bold;">Ticket Type:</td><td>{ticket.ticket_type.value.replace('_', ' ').title()}</td></tr>
+          <tr><td style="padding: 8px; font-weight:bold;">Number of Tickets:</td><td>{ticket.ticket_count}</td></tr>
           <tr><td style="padding: 8px; font-weight:bold;">Name:</td><td>{ticket.name}</td></tr>
           <tr><td style="padding: 8px; font-weight:bold;">Mobile:</td><td>{ticket.mobile}</td></tr>
           <tr><td style="padding: 8px; font-weight:bold;">UPI ID:</td><td>{ticket.upi_id}</td></tr>
@@ -265,7 +268,10 @@ def create_ticket(ticket: TicketCreate, conn=Depends(get_db_conn)):
     Block duplicate UPI IDs: if upi_id already exists, reject the request.
     """
     ticket_uid = str(uuid.uuid4())
-    logger.info(f"Creating ticket for {ticket.email} with UPI {ticket.upi_id}")
+    logger.info(
+        f"Creating ticket for {ticket.email} with UPI {ticket.upi_id} "
+        f"and ticket_count={ticket.ticket_count}"
+    )
 
     # 0) Check if UPI already exists
     try:
@@ -287,14 +293,14 @@ def create_ticket(ticket: TicketCreate, conn=Depends(get_db_conn)):
         logger.exception(f"DB lookup failed: {e}")
         raise HTTPException(status_code=500, detail=f"DB lookup failed: {e}")
 
-    # 1) Insert into DB
+    # 1) Insert into DB (now includes ticket_count)
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO tickets (ticket_uid, name, mobile, email, upi_id, ticket_type)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING ticket_uid, name, mobile, email, upi_id, ticket_type;
+                INSERT INTO tickets (ticket_uid, name, mobile, email, upi_id, ticket_type, ticket_count)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING ticket_uid, name, mobile, email, upi_id, ticket_type, ticket_count;
                 """,
                 (
                     ticket_uid,
@@ -303,11 +309,15 @@ def create_ticket(ticket: TicketCreate, conn=Depends(get_db_conn)):
                     ticket.email,
                     ticket.upi_id,
                     ticket.ticket_type.value,
+                    ticket.ticket_count,
                 ),
             )
             row = cur.fetchone()
         conn.commit()
-        logger.info(f"Ticket inserted for {ticket.email} with ticket_uid={ticket_uid}")
+        logger.info(
+            f"Ticket inserted for {ticket.email} with ticket_uid={ticket_uid}, "
+            f"ticket_count={ticket.ticket_count}"
+        )
     except Exception as e:
         conn.rollback()
         logger.exception(f"DB insert failed: {e}")
@@ -336,6 +346,7 @@ def create_ticket(ticket: TicketCreate, conn=Depends(get_db_conn)):
         email=row[3],
         upi_id=row[4],
         ticket_type=TicketType(row[5]),
+        ticket_count=row[6],
     )
 
 
@@ -354,7 +365,7 @@ def get_ticket(ticket_uid: str, conn=Depends(get_db_conn)):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT ticket_uid, name, mobile, email, upi_id, ticket_type
+                SELECT ticket_uid, name, mobile, email, upi_id, ticket_type, ticket_count
                 FROM tickets
                 WHERE ticket_uid = %s;
                 """,
@@ -376,4 +387,5 @@ def get_ticket(ticket_uid: str, conn=Depends(get_db_conn)):
         email=row[3],
         upi_id=row[4],
         ticket_type=TicketType(row[5]),
+        ticket_count=row[6],
     )

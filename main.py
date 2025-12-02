@@ -16,7 +16,6 @@ from pydantic import BaseModel, EmailStr, constr
 
 import qrcode
 import psycopg2
-from psycopg2.pool import SimpleConnectionPool
 
 # Load .env
 load_dotenv()  # this reads .env and puts values into environment
@@ -37,6 +36,11 @@ if not all([SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SENDER_EMAIL]):
 
 SMTP_PORT = int(SMTP_PORT)  # convert after validation
 
+# Party details
+PARTY_NAME = "New Year Bash 2026"
+PARTY_VENUE = "INS KURSURA SUBMARINE LAWN"
+PARTY_DATE = "31 Dec 2025, 7:30 PM - 12:30 AM"
+
 # Neon / Postgres connection string from env
 # Example .env:
 # DATABASE_URL=postgresql://neondb_owner:PASS@ep-...neon.tech/neondb?sslmode=require&target_session_attrs=read-write
@@ -44,37 +48,21 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set in environment variables.")
 
-# ========== Postgres Connection Pool (Neon) ==========
-
-try:
-    # psycopg2 can take a full DSN URL directly
-    pool = SimpleConnectionPool(
-        minconn=1,
-        maxconn=10,
-        dsn=DATABASE_URL,
-    )
-
-    # Optional sanity check at startup
-    conn = pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT now();")
-            ts = cur.fetchone()
-            print(f"Connected to Postgres. Server time: {ts[0]}")
-    finally:
-        pool.putconn(conn)
-
-except Exception as e:
-    # Fail fast if DB is unreachable on startup
-    raise RuntimeError(f"Could not connect to Postgres: {e}")
-
+# ========== Postgres Connection (Neon) ==========
 
 def get_db_conn():
-    conn = pool.getconn()
+    """
+    Open a NEW connection for each request and close it after.
+    This avoids 'SSL connection has been closed unexpectedly'
+    from stale pooled connections on Neon / Render.
+    """
+    conn = None
     try:
+        conn = psycopg2.connect(DATABASE_URL)
         yield conn
     finally:
-        pool.putconn(conn)
+        if conn is not None:
+            conn.close()
 
 
 # ========== Pydantic Schemas ==========
@@ -142,7 +130,7 @@ def send_ticket_email(
       <div style="padding: 25px;">
 
         <h2 style="color: #333; text-align:center;">Your Ticket is Confirmed 🎉</h2>
-        <p style="font-size: 16px; color: #555;">
+        <p style="font-size: 16px; color: #555%;">
           Hi <strong>{ticket.name}</strong>,<br><br>
           Your ticket has been successfully booked for 
           <strong>{PARTY_NAME}</strong>!

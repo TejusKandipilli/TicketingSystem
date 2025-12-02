@@ -1,15 +1,11 @@
 # main.py
 import uuid
 import io
-import smtplib
-from enum import Enum
-from email.mime.base import MIMEBase
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email import encoders
 import os
-from dotenv import load_dotenv
 import logging
+import base64
+
+from dotenv import load_dotenv
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +13,8 @@ from pydantic import BaseModel, EmailStr, constr
 
 import qrcode
 import psycopg2
+import requests
+from enum import Enum
 
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO)
@@ -27,24 +25,15 @@ load_dotenv()  # this reads .env and puts values into environment
 
 # ========== CONFIG ==========
 
-# Gmail SMTP config (use app password, not your real Gmail password)
-SMTP_HOST = os.getenv("SMTP_HOST")
-SMTP_PORT = os.getenv("SMTP_PORT")
-SMTP_USER = os.getenv("SMTP_USER")
-SMTP_PASS = os.getenv("SMTP_PASS")
+# SendGrid config
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 BANNER_IMAGE_URL = os.getenv("PARTY_BANNER_URL")
 
-# Validate required SMTP config
-if not all([SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SENDER_EMAIL]):
-    raise RuntimeError("Missing required SMTP environment variables.")
+if not all([SENDGRID_API_KEY, SENDER_EMAIL]):
+    raise RuntimeError("Missing SENDGRID_API_KEY or SENDER_EMAIL env vars.")
 
-SMTP_PORT = int(SMTP_PORT)  # convert after validation
-
-logger.info(
-    f"SMTP config loaded: host={SMTP_HOST}, port={SMTP_PORT}, "
-    f"user={SMTP_USER}, sender={SENDER_EMAIL}"
-)
+logger.info(f"SendGrid config loaded: sender={SENDER_EMAIL}")
 
 # Party details
 PARTY_NAME = "New Year Bash 2026"
@@ -123,7 +112,7 @@ def generate_qr_png_bytes(data: str) -> bytes:
     return buf.read()
 
 
-# ========== Email Sending (Gmail) ==========
+# ========== Email Sending (SendGrid Web API) ==========
 
 def send_ticket_email(
     recipient_email: str,
@@ -179,53 +168,62 @@ def send_ticket_email(
 </html>
 """
 
-    msg = MIMEMultipart()
-    msg["From"] = SENDER_EMAIL
-    msg["To"] = recipient_email
-    msg["Subject"] = subject
-
-    # IMPORTANT: send as HTML, not plain text
-    msg.attach(MIMEText(body, "html"))
-
-    part = MIMEBase("application", "octet-stream")
-    part.set_payload(qr_png_bytes)
-    encoders.encode_base64(part)
-    part.add_header(
-        "Content-Disposition",
-        f'attachment; filename="ticket_{ticket_uid}.png"',
-    )
-    msg.attach(part)
-
     logger.info(
-        f"Preparing to send email: to={recipient_email}, "
-        f"via {SMTP_HOST}:{SMTP_PORT}, sender={SENDER_EMAIL}"
+        f"Preparing to send email via SendGrid: to={recipient_email}, sender={SENDER_EMAIL}"
     )
+
+    # Base64-encode QR image for attachment
+    qr_b64 = base64.b64encode(qr_png_bytes).decode("ascii")
+
+    payload = {
+        "personalizations": [
+            {
+                "to": [{"email": recipient_email}],
+            }
+        ],
+        "from": {"email": SENDER_EMAIL},
+        "subject": subject,
+        "content": [
+            {
+                "type": "text/html",
+                "value": body,
+            }
+        ],
+        "attachments": [
+            {
+                "content": qr_b64,
+                "type": "image/png",
+                "filename": f"ticket_{ticket_uid}.png",
+                "disposition": "attachment",
+            }
+        ],
+    }
+
+    headers = {
+        "Authorization": f"Bearer {SENDGRID_API_KEY}",
+        "Content-Type": "application/json",
+    }
 
     try:
-        logger.info("Connecting to SMTP server...")
-        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20)
+        resp = requests.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            headers=headers,
+            json=payload,
+            timeout=20,
+        )
+        if resp.status_code >= 400:
+            logger.error(f"SendGrid error {resp.status_code}: {resp.text}")
+            raise RuntimeError(f"SendGrid API error {resp.status_code}: {resp.text}")
 
-        logger.info("Starting TLS...")
-        server.starttls()
-
-        logger.info("Logging in to SMTP server...")
-        server.login(SMTP_USER, SMTP_PASS)
-
-        logger.info("Sending email...")
-        server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
-
-        logger.info("Closing SMTP connection.")
-        server.quit()
-
-        logger.info("Email sent successfully.")
+        logger.info("Email sent successfully via SendGrid.")
     except Exception as e:
-        logger.exception(f"SMTP error while sending to {recipient_email}: {e}")
+        logger.exception(f"SendGrid error while sending to {recipient_email}: {e}")
         raise RuntimeError(f"Failed to send email: {e}")
 
 
 # ========== FastAPI App + CORS ==========
 
-app = FastAPI(title="New Year Party Ticketing API (pg + gmail + qr)")
+app = FastAPI(title="New Year Party Ticketing API (pg + sendgrid + qr)")
 
 # CORS so frontend can call this API
 app.add_middleware(

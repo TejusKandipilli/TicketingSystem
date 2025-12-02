@@ -36,7 +36,7 @@ logger.info(f"SendGrid config loaded: sender={SENDER_EMAIL}")
 
 # Banner file path (local file, e.g. in same folder as main.py)
 # Put banner.png in the same directory as this file.
-BANNER_FILE_PATH = os.getenv("PARTY_BANNER_FILE", "banner.png")
+BANNER_FILE_PATH = os.getenv("PARTY_BANNER_FILE", "public/banner.png")
 
 # Party details
 PARTY_NAME = "New Year Bash 2026"

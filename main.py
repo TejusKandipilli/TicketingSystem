@@ -196,16 +196,9 @@ def send_ticket_email(
 app = FastAPI(title="New Year Party Ticketing API (pg + gmail + qr)")
 
 # CORS so frontend can call this API
-origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    # add your deployed frontend origin here when you host it
-    # "https://your-frontend-domain.com",
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,      # use ["*"] during dev if you want it wide open
+    allow_origins=["*"],       # allow all domains
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -284,6 +277,10 @@ def create_ticket(ticket: TicketCreate, conn=Depends(get_db_conn)):
         upi_id=row[4],
         ticket_type=TicketType(row[5]),
     )
+
+@app.get("/")
+def health():
+    return {"status": "ok"}
 
 
 @app.get("/tickets/{ticket_uid}", response_model=TicketResponse)

@@ -4,6 +4,7 @@ import io
 import os
 import logging
 import base64
+from enum import Enum
 
 from dotenv import load_dotenv
 
@@ -13,8 +14,7 @@ from pydantic import BaseModel, EmailStr, constr
 
 import qrcode
 import psycopg2
-import requests
-from enum import Enum
+import requests  # only used for SendGrid API, not for images
 
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO)
@@ -28,12 +28,15 @@ load_dotenv()  # this reads .env and puts values into environment
 # SendGrid config
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
-BANNER_IMAGE_URL = os.getenv("PARTY_BANNER_URL")
 
 if not all([SENDGRID_API_KEY, SENDER_EMAIL]):
     raise RuntimeError("Missing SENDGRID_API_KEY or SENDER_EMAIL env vars.")
 
 logger.info(f"SendGrid config loaded: sender={SENDER_EMAIL}")
+
+# Banner file path (local file, e.g. in same folder as main.py)
+# Put banner.png in the same directory as this file.
+BANNER_FILE_PATH = os.getenv("PARTY_BANNER_FILE", "banner.png")
 
 # Party details
 PARTY_NAME = "New Year Bash 2026"
@@ -122,14 +125,12 @@ def send_ticket_email(
 ):
     subject = f"Your Ticket for {PARTY_NAME}"
 
+    # No banner <img> here, just text and details
     body = f"""
 <html>
   <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
 
     <div style="max-width: 600px; margin: auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 0 10px rgba(0,0,0,0.15);">
-
-      <!-- Banner Image -->
-      <img src="{BANNER_IMAGE_URL}" alt="Party Banner" style="width:100%; max-height:280px; object-fit:cover;">
 
       <div style="padding: 25px;">
 
@@ -153,8 +154,8 @@ def send_ticket_email(
         </table>
 
         <p style="font-size: 15px; color: #444; margin-top: 25px;">
-          Please show this email and the attached QR code at the entry gate.
-          <br>Do <strong>not</strong> share your ticket or QR code with anyone.
+          Your ticket QR code and the event banner are attached to this email.
+          <br>Please show the QR code at the entry gate and do <strong>not</strong> share it with anyone.
         </p>
 
         <p style="font-size: 16px; margin-top: 25px;">
@@ -175,6 +176,35 @@ def send_ticket_email(
     # Base64-encode QR image for attachment
     qr_b64 = base64.b64encode(qr_png_bytes).decode("ascii")
 
+    attachments = [
+        {
+            "content": qr_b64,
+            "type": "image/png",
+            "filename": f"ticket_{ticket_uid}.png",
+            "disposition": "attachment",
+        }
+    ]
+
+    # Add banner from local file if present
+    if BANNER_FILE_PATH:
+        try:
+            logger.info(f"Loading banner image from {BANNER_FILE_PATH}")
+            with open(BANNER_FILE_PATH, "rb") as f:
+                banner_bytes = f.read()
+            banner_b64 = base64.b64encode(banner_bytes).decode("ascii")
+
+            attachments.append(
+                {
+                    "content": banner_b64,
+                    "type": "image/png",  # change to image/jpeg if banner is jpg
+                    "filename": "event_banner.png",
+                    "disposition": "attachment",
+                }
+            )
+            logger.info("Banner image attached successfully from file.")
+        except Exception as e:
+            logger.warning(f"Failed to load banner image from file: {e}")
+
     payload = {
         "personalizations": [
             {
@@ -189,14 +219,7 @@ def send_ticket_email(
                 "value": body,
             }
         ],
-        "attachments": [
-            {
-                "content": qr_b64,
-                "type": "image/png",
-                "filename": f"ticket_{ticket_uid}.png",
-                "disposition": "attachment",
-            }
-        ],
+        "attachments": attachments,
     }
 
     headers = {
